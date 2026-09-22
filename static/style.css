@@ -1,0 +1,305 @@
+/* ============================================================
+   嘀嘀智能出行 —— 页面样式
+
+   设计原则（全部写在最上面这 9 个变量里，改颜色只改这里）：
+     · 暖米白底，不用纯白
+     · 只有 2 个彩色：主色（墨绿）+ 强调色（赭石橙），其余全是冷暖不同的灰
+     · 不用卡片、不用边框分割，层次全靠留白和字号
+     · 动效只用在该用的地方：结果淡入、进度节点点亮、按钮悬停
+   ============================================================ */
+
+:root {
+  --bg:        #F7F4EF;  /* 页面底色：暖米白 */
+  --field:     #FFFCF8;  /* 输入框底色：比背景亮一档，但仍是暖的 */
+  --ink:       #1A1917;  /* 正文：偏暖的近黑，不用 #000 */
+  --muted:     #78716A;  /* 次要文字 / 小标签：暖灰 */
+  --line:      #E5DFD6;  /* 极淡的描边色，只给输入框用 */
+  --primary:   #2F5D50;  /* 主色：墨绿。按钮，以及进度轨道上"已完成"的节点 */
+  --primary-d: #244A3F;  /* 主色深一档，给按钮悬停用 */
+  --accent:    #B85C38;  /* 强调色：赭石橙。进度轨道上"正在进行"的那个节点 */
+  --faint:     #A9A199;  /* 最淡的一档文字：轨道里还没轮到的节点名 */
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+
+  /* 中文字体走系统自带的，不用 Inter / Roboto / Arial */
+  font-family: "PingFang SC", "HarmonyOS Sans SC", "Source Han Sans SC",
+               "Noto Sans SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-size: 16px;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+}
+
+main {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 88px 28px 128px;
+}
+
+/* ===== 顶部标题区：小标签和大标题拉开字号差（12px vs 40px）===== */
+.eyebrow {
+  margin: 0 0 22px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
+  font-size: 12px;
+  letter-spacing: .16em;
+  color: var(--muted);
+}
+
+h1 {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 600;
+  line-height: 1.24;
+  letter-spacing: -.01em;
+}
+
+/* ===== 输入区 ===== */
+#bar {
+  display: flex;
+  gap: 12px;
+  margin-top: 52px;
+}
+
+#q {
+  flex: 1;
+  min-width: 0;
+  padding: 14px 16px;
+  font: inherit;
+  color: inherit;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+
+#q::placeholder { color: #A9A29A; }
+
+#q:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(47, 93, 80, .12);
+}
+
+#go {
+  padding: 14px 24px;
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  color: #F7F4EF;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background .18s ease, transform .18s ease;
+}
+
+#go:hover:not(:disabled) { background: var(--primary-d); }
+#go:active:not(:disabled) { transform: translateY(1px); }
+#go:disabled { opacity: .45; cursor: default; }
+
+/* ===== 进度轨道：四个 Agent 依次点亮 =====
+   整条轨道的状态只由每个 li 上的 data-state 属性决定，
+   JS 那边只负责改这一个属性，具体长什么样全在这里。
+
+   注意 .track[hidden] 那条：因为下面用了 display:flex，
+   它的优先级比浏览器默认的 [hidden] 高，不写这句就藏不住了。 */
+.track {
+  display: flex;
+  margin: 30px 0 0;
+  padding: 0;
+  list-style: none;   /* ol 默认带序号，去掉 */
+}
+
+.track[hidden] { display: none; }
+
+.track li {
+  position: relative;
+  flex: 1;            /* 四个格子等宽 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 连接线：从本节点的圆心，连到下一个节点的圆心。
+   left:50% 是本节点的圆心；right:-50% 再往右半个格子，
+   正好落在下一个节点的圆心 —— 所以线是"点对点"的，不用算像素。 */
+.track li:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: 5px;           /* 圆点高 11px，圆心在 5.5px 处 */
+  left: 50%;
+  right: -50%;
+  height: 1px;
+  background: var(--line);
+  transition: background .4s ease;
+}
+
+.track li[data-state="done"]:not(:last-child)::before { background: var(--primary); }
+
+/* 圆点。默认（还没轮到）= 浅灰空心。
+   描边用 inset 的 box-shadow 而不是 border —— border 会把盒子撑大，
+   圆心就不在 5.5px 了，上面那条线的 top 得跟着改。 */
+.dot {
+  position: relative;
+  z-index: 1;         /* 压在连接线上面，否则线会从圆点中间穿过去 */
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--line);
+  transition: background .3s ease, box-shadow .3s ease;
+}
+
+/* 已完成：墨绿实心 */
+.track li[data-state="done"] .dot {
+  background: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+/* 正在进行：赭石橙 + 一圈淡光晕 + 呼吸。
+   光晕让"现在在这儿"更显眼，视线自然被它抓住。 */
+.track li[data-state="active"] .dot {
+  background: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent),
+              0 0 0 4px rgba(184, 92, 56, .14);
+  animation: pulse 1.3s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1;   transform: scale(1);   }
+  50%      { opacity: .3;  transform: scale(.75); }
+}
+
+/* 节点名：三级层次 —— 还没轮到的最淡、完成的中灰、正在跑的用强调色。
+   这样一眼看过去，视线自动落在"现在跑到哪儿了"。 */
+.track .label {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .1em;
+  color: var(--faint);
+  transition: color .3s ease;
+}
+
+.track li[data-state="done"] .label   { color: var(--muted); }
+.track li[data-state="active"] .label { color: var(--accent); }
+
+/* ===== 结果区 =====
+   没有卡片、没有边框，每段之间只靠 48px 的间距分开 */
+#out { margin-top: 48px; }
+
+#out section {
+  margin-top: 48px;
+  animation: rise .5s cubic-bezier(.2, .7, .2, 1) both;
+}
+
+#out section:first-child { margin-top: 0; }
+
+/* 四段依次淡入，错开一点点，看起来是"一层层出来"而不是"一起蹦出来" */
+#out section:nth-child(1) { animation-delay: 0s;    }
+#out section:nth-child(2) { animation-delay: .07s;  }
+#out section:nth-child(3) { animation-delay: .14s;  }
+#out section:nth-child(4) { animation-delay: .21s;  }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* 段标题那一行：标题靠左，本段耗时贴到最右边。
+   用 baseline 对齐，让 12px 的标题和 11px 的耗时坐在同一条基线上。 */
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 18px;
+}
+
+#out section h2 {
+  margin: 0;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: .16em;
+  color: var(--muted);
+}
+
+/* 耗时：用最淡的那一档灰，绝不跟标题抢视线 */
+.took {
+  flex: none;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: var(--faint);
+}
+
+/* ===== 结果正文的排版 =====
+   Agent 返回的是纯文字，层次全靠下面这几条撑起来：
+     h2（段标题）> h3（段内小标题）> 正文 > note（明细行）
+   字号 12 < 16 > 16/15，靠字号和颜色拉开，不用边框和卡片。 */
+.body {
+  overflow-wrap: anywhere;
+  line-height: 1.85;
+}
+
+/* 段内小标题：【整体趋势】【游玩提示】这类 */
+.body h3 {
+  margin: 28px 0 10px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: .01em;
+}
+
+.body h3:first-child { margin-top: 0; }
+
+/* 每天的日程标题：Day 1｜9月21日｜晴。
+   用主色 + 更大的上间距，扫一眼就知道"新的一天开始了"。 */
+.body h3.day {
+  margin-top: 34px;
+  color: var(--primary);
+  font-size: 15px;
+}
+
+/* 正文段落 */
+.body p { margin: 0 0 10px; }
+
+/* 编号项："1. 西湖 —— 一句话亮点"。
+   padding-left 把内容推进去，text-indent 再把【第一行】拽回来 ——
+   一推一拽，数字就挂在了外面，换行后的文字也能和上一行对齐。 */
+.body p.item {
+  margin: 20px 0 8px;
+  padding-left: 1.7em;
+  text-indent: -1.7em;
+  font-weight: 500;
+}
+
+.body p.item:first-child { margin-top: 0; }
+
+/* 右缩进的明细行："建议游玩：X 小时""上午：景点名"。
+   往右推一格（和上面 item 的正文对齐），再淡一档，看上去就是从属于上一条。 */
+.body p.note {
+  margin: 0 0 5px;
+  padding-left: 1.7em;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+/* 每段末尾别多留一行空隙 */
+.body > :last-child { margin-bottom: 0; }
+
+/* ===== 小屏幕 ===== */
+@media (max-width: 560px) {
+  main { padding: 52px 20px 88px; }
+  h1 { font-size: 30px; }
+  #bar { flex-direction: column; }
+}
+
+/* 系统里开了"减少动态效果"的话，所有动画和过渡都关掉 */
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

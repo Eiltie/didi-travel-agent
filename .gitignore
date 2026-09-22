@@ -1,0 +1,17 @@
+# 告诉 git：这几样东西不要收进来。
+# 顺序很重要——必须在第一次 git add 之前就位，否则收进去了就删不干净。
+
+# 1. 虚拟环境：几百兆，而且是可以重建的（照 package/requirements.txt 装回来就行）
+venv/
+
+# 2. Python 自动生成的缓存文件
+__pycache__/
+*.pyc
+
+# 3. 密钥文件：里面有 DeepSeek 和 高德地图 的 Key，绝对不能进 git
+.env
+
+# 4. 个人笔记：学习记录、项目状态这些只留在本地，不进公开仓库
+#    注意写的是 src/*.txt 而不是 *.txt —— 后者会把 package/requirements.txt
+#    也一起排除掉，那是别人装依赖用的清单，必须跟着代码走。
+src/*.txt

@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>嘀嘀智能出行</title>
+  <!-- 把旁边那个 style.css 拿过来当我的样子。没有这句，页面就是光秃秃的黑白文字。 -->
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+  <main>
+    <!-- ① 标题区 -->
+    <p class="eyebrow">嘀嘀智能出行</p>
+    <h1>想去哪儿，说一句就行。</h1>
+
+    <!-- ② 输入区。用 form 包起来，这样按回车也能提交，不用非得点按钮 -->
+    <form id="bar">
+      <input id="q" type="text" autocomplete="off"
+             placeholder="比如：下周想去杭州玩3天，带老人">
+      <button id="go" type="submit">开始规划</button>
+    </form>
+
+    <!-- ③ 进度轨道：四个 Agent 依次点亮。
+         平时藏起来（hidden），跑图时才出现。
+         四个 li 的先后顺序必须和 <script> 里的 ORDER 一致。 -->
+    <ol id="track" class="track" aria-label="执行进度" hidden>
+      <li data-step="weather"><span class="dot"></span><span class="label">天气</span></li>
+      <li data-step="spots"><span class="dot"></span><span class="label">景点</span></li>
+      <li data-step="itinerary"><span class="dot"></span><span class="label">行程</span></li>
+      <li data-step="route_plan"><span class="dot"></span><span class="label">路线</span></li>
+    </ol>
+
+    <!-- ④ 结果显示区。JS 会往这里面塞内容 -->
+    <div id="out"></div>
+  </main>
+
+  <script>
+    // ===== 先把页面上要用的几个元素"抓"到手里 =====
+    // getElementById('q') 就是"找到那个 id 叫 q 的元素"
+    const form   = document.getElementById('bar');
+    const input  = document.getElementById('q');
+    const button = document.getElementById('go');
+    const track  = document.getElementById('track');
+    const out    = document.getElementById('out');
+
+    // ===== 多轮对话靠它 =====
+    // 服务员（后端）不记事，所以上次说过什么得由页面自己记着，
+    // 每次请求把「这次这句 + 之前所有话」整包发过去。
+    const history = [];
+
+    // 后端推过来的每一段都自带一个 key（字段名），这里是"key → 显示什么标题"的对照表。
+    // 以前这里是个数组（靠顺序决定谁先谁后），现在改成表了——
+    // 因为顺序不再由前端决定，而是图跑出谁就推谁。前端只管"这一条该贴到哪儿"。
+    const TITLES = {
+      weather:    '天气',
+      spots:      '景点推荐',
+      itinerary:  '行程安排',
+      route_plan: '详细路线',
+    };
+
+    // 四个节点在图里的先后顺序。轨道靠它把"收到哪一段"翻译成"走到第几步"。
+    // 以后往图里插了新节点，这里和上面的 TITLES 都要跟着改。
+    const ORDER = ['weather', 'spots', 'itinerary', 'route_plan'];
+
+    // 把轨道设到"正在跑第 i 个节点"：它前面的算完成，它自己高亮，后面的还没轮到。
+    // i 传 4（超出范围）时没有高亮项，四个全变成完成态 —— 这正是"整张图跑完了"。
+    // 注意这只是改每个 li 的 data-state 属性，长什么样全交给 CSS。
+    function setStage(i) {
+      for (const li of track.children) {
+        const n = ORDER.indexOf(li.dataset.step);
+        li.dataset.state = n < i ? 'done' : (n === i ? 'active' : 'todo');
+      }
+    }
+
+    // ===== 小工具：造一个元素 =====
+    // 全程用 createElement + textContent，绝不把 HTML 拼成字符串 ——
+    // 文字里万一出现 < > 这类符号，拼字符串会把页面结构搞乱，这样写不会。
+    function node(tag, cls, text) {
+      const el = document.createElement(tag);
+      if (cls) el.className = cls;
+      el.textContent = text;
+      return el;
+    }
+
+    // ===== 把 Agent 返回的一整段文字，按"行"拆成有层次的排版 =====
+    // 依据是提示词里规定死的产出结构（total_prompts.py）：
+    //   天气      【整体趋势】小标题 + 正文段落
+    //   景点      "1. 西湖 —— 亮点" + 右缩进的"建议游玩／适合原因"明细行
+    //   行程      "Day 1｜9月21日｜晴" + 右缩进的"上午／下午／晚上"
+    //   路线      "Day 1｜…" + 不缩进的"09:00  …"时间轴
+    // 所以不用真去建列表树，只要【逐行认类型】，层次交给 CSS 表达就够了。
+    // 认不出来的行原样当正文 —— 最坏情况是某行缩进不太对，不会比纯文本更差。
+    const HEAD = /^(?:\d+[.、]\s*)?【([^】]+)】(.*)$/;   // 【整体趋势】，也认"1.【整体趋势】"
+    const ITEM = /^\d+[.、]\s+\S/;                      // 1. 西湖 —— 亮点
+    const DAY  = /^Day\s*\d+\s*｜/;                      // Day 1｜9月21日（周一）｜晴
+
+    function renderBody(text) {
+      const frag = document.createDocumentFragment();
+
+      for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line) continue;                 // 空行只是分段用的，本身不用渲染
+
+        const head = line.match(HEAD);
+
+        if (head) {
+          frag.append(node('h3', '', head[1]));
+          // 标题和正文挤在同一行也要认（"【整体趋势】未来三天…"）
+          const rest = head[2].trim();
+          if (rest) frag.append(node('p', '', rest));
+        } else if (DAY.test(line)) {
+          frag.append(node('h3', 'day', line));
+        } else if (ITEM.test(line)) {
+          frag.append(node('p', 'item', line));
+        } else if (/^[ \t　]/.test(raw)) {   // 注意：看的是"原始行"缩进，上面已经 trim 过了
+          frag.append(node('p', 'note', line));
+        } else {
+          frag.append(node('p', '', line));
+        }
+      }
+      return frag;
+    }
+
+    // ===== 小工具：造一段结果 =====
+    // took 是"这一段花了多久"，闲聊和报错没有这个概念，传空就不显示。
+    function makeSection(title, key, text, took) {
+      const box = document.createElement('section');
+      if (key) box.dataset.key = key;      // 在元素上盖个章，以后凭 key 就能找到它
+
+      const head = document.createElement('div');
+      head.className = 'head';
+      head.append(node('h2', '', title));
+      if (took) head.append(node('span', 'took', took));
+
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.append(renderBody(text));
+
+      box.append(head, body);
+      return box;
+    }
+
+    // 把某一段贴到页面上：还没贴过就新建、贴在末尾；已经贴过就换掉里面的内容。
+    // 按 key 找位置、而不是按"第几条"，是为了以后图里的节点顺序变了也不会错位。
+    function putSection(key, text, took) {
+      const old = out.querySelector('[data-key="' + key + '"]');
+      if (old) {
+        old.querySelector('.body').replaceChildren(renderBody(text));
+        const t = old.querySelector('.took');
+        if (t && took) t.textContent = took;
+      } else {
+        out.append(makeSection(TITLES[key] || key, key, text, took));
+      }
+    }
+
+    // 清空显示区，换上新的内容
+    function show(node) {
+      out.replaceChildren(node);
+    }
+
+    // ===== 主流程：点"开始规划"（或按回车）=====
+    // 写成 async 是为了能在里面用 await —— await 读作"在这儿等一下，等结果回来再往下走"，
+    // 不然代码会一口气跑到最后，那时候结果还没回来呢。
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();          // 拦掉浏览器的默认提交（默认会刷新整页，那不行）
+
+      const query = input.value.trim();
+      if (!query) return;              // 空着就不发
+
+      // —— 发请求前的准备：立刻清空输入框、锁按钮、清旧结果、亮出"正在查天气" ——
+      // 输入框是"立刻"清，不是等结果回来才清：
+      // 这样你可以直接打下一句（闲聊完尤其明显），不用手动删。
+      // 代价是这句话暂时不在框里了——万一请求没发出去，下面 catch 会把它还回来。
+      input.value = '';
+      button.disabled = true;
+      out.replaceChildren();
+
+      // 轨道先收起来。什么时候亮？等后端发 START —— 那时候它才真正开始跑图。
+      // 这里不再"干等 N 秒去猜"，所以闲聊再慢也不会误亮一下。
+      track.hidden = true;
+      setStage(0);        // 顺便把上一次跑完留下的"四个全绿"清掉
+      let started = false;                            // 后端确认在跑图了吗？收到 START 才算
+      let lastAt = Date.now();                        // 上一段是什么时候到的，用来算本段耗时
+
+      try {
+        // ① 把请求发给后端。fetch 就是"代码版的 curl"。
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: query, history: history })
+        });
+
+        // ② 后端这次不是"回一整包 JSON"，而是"一段一段往外推"，
+        //    所以这里拿到的是一个"龙头"，可以一块一块地读。
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();   // 把读到的字节变成文字
+        let buffer = '';                     // 还没凑成完整一条的残留
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;                   // 读完了 —— 后端那边生成器跑完了
+
+          // stream: true —— 万一这一块正好切在一个汉字的中间（汉字占 3 个字节），
+          // 先别急着解码，把半个字留在里面、等下一块拼上，否则页面上会出现乱码方块。
+          buffer += decoder.decode(value, { stream: true });
+
+          // 后端约定：一条消息以"空行"结尾。所以按空行切。
+          // 切出来的最后一段很可能是半条（那个空行还没到），留着，等下一块。
+          const pieces = buffer.split('\n\n');
+          buffer = pieces.pop();
+
+          for (const piece of pieces) {
+            if (!piece.startsWith('data:')) continue;
+            const ev = JSON.parse(piece.slice(5));   // "data:" 后面那段就是 JSON
+
+            // START = 后端说"我开始跑图了"；TRAVEL = 第一段结果到了。
+            // 两个都证明在跑图，收到就亮轨道。
+            // 带上 TRAVEL 是兜底：万一后端还是没发 START 的旧版，收到结果也照样能亮。
+            if (ev.kind === 'START' || ev.kind === 'TRAVEL') {
+              started = true;
+              track.hidden = false;
+            }
+
+            if (ev.kind === 'TRAVEL') {
+              // 这一段花了多久 = 距上一段到达的间隔。
+              // 第一段是从"点下按钮"算起的，所以它把意图识别和改写需求也算进去了，
+              // 会比天气节点本身的耗时略大一点。
+              const now = Date.now();
+              const took = ((now - lastAt) / 1000).toFixed(1) + 's';
+              lastAt = now;
+
+              // 来一段贴一段。前面已经贴上的不会被顶掉 —— 这是流式的关键区别，
+              // 以前这里是"四段攒齐、一次性 replaceChildren"。
+              putSection(ev.key, ev.text, took);
+
+              // 这一段跑完了，把轨道往前推一格（下一段变成"进行中"）。
+              // 收到最后一段时 i = 4，超出范围，四个就全变成完成态了。
+              if (ORDER.includes(ev.key)) setStage(ORDER.indexOf(ev.key) + 1);
+            } else if (ev.kind === 'CHAT') {
+              show(makeSection('提示', null, ev.message));
+            } else if (ev.kind === 'ERROR') {
+              // 已经贴出来的那几段【留着】，末尾补一条说明就够了
+              out.append(makeSection('出错了', null, ev.message));
+            }
+            // START 在上面亮完轨道就没它事了，这一轮不需要贴任何东西。
+            // 这里特意不用 else 兜底：将来后端再加新 kind，也不该被当成报错显示出来。
+          }
+        }
+
+        // ③ 不管哪种结果，这句话都记进历史，下次一起发过去
+        history.push(query);
+
+      } catch (err) {
+        // 网络断了、后端没启动这类问题会走到这儿。
+        // 用 append 而不是 show：万一是跑到一半断的，前面已经显示的段落不该被抹掉。
+        // 再把刚才那句话还回输入框——请求都没发出去，不该让你白打一遍。
+        // （只在框里是空的时候才还，免得盖掉你后来新打的内容）
+        if (!input.value) input.value = query;
+        out.append(makeSection('连不上后端', null,
+          '确认一下 api.py 那个窗口还在跑？\n\n' + err));
+      } finally {
+        // 不管成功还是失败，都要把按钮解锁
+        button.disabled = false;
+
+        // 没跑图（闲聊，或者一上来就出错）就把轨道收起来。
+        // 真跑过的【留在原地】当收据：四个全绿，也免得下面的结果往上跳一下。
+        if (!started) track.hidden = true;
+      }
+    });
+  </script>
+</body>
+</html>
