@@ -289,6 +289,19 @@ h1 {
   color: var(--muted);
 }
 
+/* 等待期的"正在搜集…"小字：比正文淡一档、斜体，再加一个很轻的呼吸 ——
+   一眼能看出"这一段在忙，不是卡住了" */
+.body p.waiting {
+  color: var(--muted);
+  font-style: italic;
+  animation: breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 1;   }
+  50%      { opacity: .45; }
+}
+
 /* 每段末尾别多留一行空隙 */
 .body > :last-child { margin-bottom: 0; }
 

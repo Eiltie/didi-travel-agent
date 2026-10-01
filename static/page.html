@@ -147,8 +147,16 @@
       const old = out.querySelector('[data-key="' + key + '"]');
       if (old) {
         old.querySelector('.body').replaceChildren(renderBody(text));
-        const t = old.querySelector('.took');
-        if (t && took) t.textContent = took;
+        if (took) {
+          let t = old.querySelector('.took');
+          if (!t) {
+            // 流式下这段是被"小字"提前建出来的，那时还没有耗时，标题行里没放
+            // .took —— 现在补一个上去，不然耗时永远没机会显示
+            t = node('span', 'took');
+            old.querySelector('.head').append(t);
+          }
+          t.textContent = took;
+        }
       } else {
         out.append(makeSection(TITLES[key] || key, key, text, took));
       }
@@ -157,6 +165,83 @@
     // 清空显示区，换上新的内容
     function show(node) {
       out.replaceChildren(node);
+    }
+
+    // ===== 流式渲染：字正一段一段过来，怎么往页面上贴 =====
+    // 后端现在把 LLM 每吐的一小段字就发一条过来（TOKEN 事件），一秒钟几十上百条。
+    // 每条都重画一次 DOM 会闪眼睛，所以先攒着，最多每 100ms 才重画一次。
+
+    const PAINT_MS = 100;   // 两次重画之间至少隔这么久（刷太快没意义，还费性能）
+    const pending = {};     // 每段攒到、还没定稿的文字
+    const lastPaint = {};   // 上次重画它的时刻
+    const paintTimer = {};  // 排队等着的"补画"（节流：宁可晚一点，别漏掉最后几个字）
+    let hint = null;        // 点按钮后先贴的那行"正在理解…"（真内容一到就撤掉）
+
+    function dropHint() {
+      if (hint) { hint.remove(); hint = null; }
+    }
+
+    // 把轨道挪到"这一段正在进行"。后端发来哪一段的事件，轨道就停在哪一格。
+    function focusSection(key) {
+      const i = ORDER.indexOf(key);
+      if (i >= 0) setStage(i);
+    }
+
+    // 找到 key 对应的段；还没有就先建出来（标题先出现，内容等着填）
+    function ensureSection(key) {
+      let box = out.querySelector('[data-key="' + key + '"]');
+      if (!box) {
+        box = makeSection(TITLES[key] || key, key, '', null);
+        out.append(box);
+      }
+      return box;
+    }
+
+    // 立刻把某段"已攒到的文字"重画一遍（还是用原来那套逐行分类排版）
+    function paint(key) {
+      ensureSection(key).querySelector('.body')
+        .replaceChildren(renderBody(pending[key] || ''));
+      lastPaint[key] = Date.now();
+    }
+
+    // 节流器：距上次重画够久了就马上画；不够久就排到最后再补一帧
+    function schedulePaint(key) {
+      const wait = PAINT_MS - (Date.now() - (lastPaint[key] || 0));
+      if (wait <= 0) {
+        paint(key);
+      } else if (!paintTimer[key]) {
+        paintTimer[key] = setTimeout(() => { paintTimer[key] = null; paint(key); }, wait);
+      }
+    }
+
+    // 后端说"这一段在忙，暂时没字"：亮一行小字占住位置
+    function showStep(key, text) {
+      dropHint();
+      focusSection(key);
+      if (!pending[key]) {   // 已经有正文在冒了，就别拿小字盖它
+        ensureSection(key).querySelector('.body')
+          .replaceChildren(node('p', 'waiting', text));
+      }
+    }
+
+    // 收到一个文字碎片：攒进 pending，按节流节奏重画
+    function appendToken(key, text) {
+      dropHint();
+      focusSection(key);
+      ensureSection(key);
+      pending[key] = (pending[key] || '') + text;
+      schedulePaint(key);
+    }
+
+    // 这一段跑完了：拿后端给的"权威全文"定稿重画 + 轨道往前走一格。
+    // 逐字拼出来的版本和全文理论上一样，重画一遍是保底纠偏。
+    function finishSection(key, text, took) {
+      dropHint();
+      if (paintTimer[key]) { clearTimeout(paintTimer[key]); paintTimer[key] = null; }
+      delete pending[key];
+      putSection(key, text, took);
+      const i = ORDER.indexOf(key);
+      if (i >= 0) setStage(i + 1);
     }
 
     // ===== 主流程：点"开始规划"（或按回车）=====
@@ -176,12 +261,23 @@
       button.disabled = true;
       out.replaceChildren();
 
-      // 轨道先收起来。什么时候亮？等后端发 START —— 那时候它才真正开始跑图。
-      // 这里不再"干等 N 秒去猜"，所以闲聊再慢也不会误亮一下。
+      // 清掉上一轮可能没画完的残留（跑到一半断了的情况）
+      for (const k in paintTimer) { clearTimeout(paintTimer[k]); delete paintTimer[k]; }
+      for (const k in pending) delete pending[k];
+
+      // 立刻先贴一行"正在理解…"：后端这会儿还在判断这是出行需求还是闲聊，
+      // 要 2 秒左右才有第一个事件。这行字让"点下去有反应"发生在 0 秒。
+      hint = makeSection('提示', null, '正在理解你的需求…');
+      out.append(hint);
+
+      // 轨道先收起来。什么时候亮？等后端确认在跑图 —— 那时它才真正开始。
+      // 不"干等 N 秒去猜"，所以闲聊再慢也不会误亮一下。
       track.hidden = true;
       setStage(0);        // 顺便把上一次跑完留下的"四个全绿"清掉
-      let started = false;                            // 后端确认在跑图了吗？收到 START 才算
-      let lastAt = Date.now();                        // 上一段是什么时候到的，用来算本段耗时
+      let started = false;                            // 后端确认在跑图了吗？
+      let lastAt = Date.now();                        // 上一段是什么时候跑完的，用来算本段耗时
+      // 下面这几种事件一来，就说明后端在真跑图（START=开工、后面是各种过程事件）
+      const RUNNING = ['START', 'STEP', 'TOKEN', 'DONE', 'TRAVEL'];
 
       try {
         // ① 把请求发给后端。fetch 就是"代码版的 curl"。
@@ -214,33 +310,34 @@
             if (!piece.startsWith('data:')) continue;
             const ev = JSON.parse(piece.slice(5));   // "data:" 后面那段就是 JSON
 
-            // START = 后端说"我开始跑图了"；TRAVEL = 第一段结果到了。
-            // 两个都证明在跑图，收到就亮轨道。
-            // 带上 TRAVEL 是兜底：万一后端还是没发 START 的旧版，收到结果也照样能亮。
-            if (ev.kind === 'START' || ev.kind === 'TRAVEL') {
+            // 只要收到"在跑图"的事件就亮轨道（闲聊不会发这些，永远不会误亮）
+            if (RUNNING.includes(ev.kind)) {
               started = true;
               track.hidden = false;
             }
 
-            if (ev.kind === 'TRAVEL') {
-              // 这一段花了多久 = 距上一段到达的间隔。
-              // 第一段是从"点下按钮"算起的，所以它把意图识别和改写需求也算进去了，
-              // 会比天气节点本身的耗时略大一点。
+            if (ev.kind === 'TOKEN') {
+              // 一个文字碎片到了：攒起来、按节流节奏重画（打字机效果就是它）
+              appendToken(ev.key, ev.text);
+            } else if (ev.kind === 'STEP') {
+              // 这一段在忙、暂时没字：先亮一行小字占住位置
+              showStep(ev.key, ev.text);
+            } else if (ev.kind === 'DONE' || ev.kind === 'TRAVEL') {
+              // 这一段跑完了。TRAVEL 是旧版后端的叫法，留着兼容：
+              // 万一后端还是旧的，整段整段地来也照样能显示，不会白屏。
+              //
+              // 耗时 = 距上一段跑完的间隔。第一段是从"点下按钮"算起的，
+              // 所以它把意图识别和改写需求也算进去了，会比天气节点本身略大一点。
               const now = Date.now();
               const took = ((now - lastAt) / 1000).toFixed(1) + 's';
               lastAt = now;
-
-              // 来一段贴一段。前面已经贴上的不会被顶掉 —— 这是流式的关键区别，
-              // 以前这里是"四段攒齐、一次性 replaceChildren"。
-              putSection(ev.key, ev.text, took);
-
-              // 这一段跑完了，把轨道往前推一格（下一段变成"进行中"）。
-              // 收到最后一段时 i = 4，超出范围，四个就全变成完成态了。
-              if (ORDER.includes(ev.key)) setStage(ORDER.indexOf(ev.key) + 1);
+              finishSection(ev.key, ev.text, took);
             } else if (ev.kind === 'CHAT') {
+              dropHint();
               show(makeSection('提示', null, ev.message));
             } else if (ev.kind === 'ERROR') {
               // 已经贴出来的那几段【留着】，末尾补一条说明就够了
+              dropHint();
               out.append(makeSection('出错了', null, ev.message));
             }
             // START 在上面亮完轨道就没它事了，这一轮不需要贴任何东西。
@@ -256,6 +353,7 @@
         // 用 append 而不是 show：万一是跑到一半断的，前面已经显示的段落不该被抹掉。
         // 再把刚才那句话还回输入框——请求都没发出去，不该让你白打一遍。
         // （只在框里是空的时候才还，免得盖掉你后来新打的内容）
+        dropHint();
         if (!input.value) input.value = query;
         out.append(makeSection('连不上后端', null,
           '确认一下 api.py 那个窗口还在跑？\n\n' + err));

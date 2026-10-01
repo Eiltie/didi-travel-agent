@@ -44,7 +44,10 @@ def weather_node(state: AgentState) -> dict:
               .replace("{weekday}", "一二三四五六日"[today.weekday()])
               .replace("{tomorrow}", str(today + timedelta(days=1)))
               .replace("{user_query}", user_query))
-    raw = llm.invoke(prompt).content.strip()
+    # with_config(tags=["internal"]) 是给"流式输出"用的标签（见 api.py）：
+    # 这次调用的产物是给程序用的 JSON，贴了 internal，它的生成过程就不会
+    # 一个字一个字流到网页上——用户不该看到 "{"destination": "杭州"..." 这种半截过程。
+    raw = llm.with_config(tags=["internal"]).invoke(prompt).content.strip()
     # 容错：LLM 常把 JSON 裹在 ```json ... ``` 代码块里
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
     try:
@@ -66,6 +69,7 @@ def weather_node(state: AgentState) -> dict:
     })
 
     # ③ 让大脑把天气数据写成给人看的总结
+    #    （这次没贴标签——"没贴标签"＝"产物是给用户看的"，生成过程会逐字流出去）
     prompt = (WEATHER_SUMMARY_PROMPT
               .replace("{weather_data}", weather_data)
               .replace("{user_query}", user_query))
@@ -108,6 +112,8 @@ def spots_agent_node(state: AgentState) -> dict:
         ]
         history = opening
 
+    # 这个节点每一轮都走这里，但不用贴标签：中间轮输出的是工具参数，
+    # api.py 会把这类自动挡掉；只有最后写清单那一轮的正文会逐字流给用户。
     llm = get_llm()
     if _count_searches(history) < MAX_SEARCH:
         llm = llm.bind_tools([web_search])
