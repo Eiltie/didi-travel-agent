@@ -62,7 +62,7 @@ def get_weather(city: str, days: int = 3, start_date: str = "") -> str:
                 "name": name, "count": 5, "language": "zh", "format": "json",
             }).json().get("results") or []
             if geo:
-                break                        # 查到一个就停，不再往下试
+                break                        # 命中一个即停
         if not geo:
             return f"未找到城市「{city}」，请换一个城市名重试。"
 
@@ -168,7 +168,7 @@ def get_directions(origin: str, destination: str, city: str, mode: str = "drivin
     if not AMAP_KEY:
         return "没有配置 AMAP_KEY，请检查项目根目录的 .env 文件。"
 
-    if mode not in AMAP_DIRECTION_URL:   # 传了不支持的方式就当驾车，别让流程卡住
+    if mode not in AMAP_DIRECTION_URL:   # 不支持的方式回退驾车，避免流程中断
         mode = "driving"
 
     try:
@@ -192,7 +192,7 @@ def get_directions(origin: str, destination: str, city: str, mode: str = "drivin
         path = paths[0]
     except ValueError as e:          # 地名查不到这类"能靠改名字解决"的错误，原样说清楚
         return str(e)
-    except Exception as e:           # 网络、超时等意外，也不要让整个程序崩掉
+    except Exception as e:           # 网络、超时等意外，避免程序崩溃
         return (f"这个查询没成功（{e}）。可以换个名字再试一次；"
                 f"再失败就按常识估算并标注（估算）。")
 

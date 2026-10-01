@@ -1,9 +1,7 @@
 """图入口：运行整个出行助手（支持多轮对话 + 打招呼聊天）。
 
-多轮是怎么做到的：图本身完全不知道有"历史"这回事。
-是这里先用一次 LLM 把「之前聊过的 + 这一句」看懂——
-是出行需求，就合并成一句完整需求喂给图；是闲聊，就直接回一句，不跑图。
-所以除了这个文件，项目其他部分一个字没改。
+多轮：先用一次 LLM 把「历史 + 这一句」看懂——是出行需求，就合并成完整需求喂给图；
+是闲聊，就直接回复、不跑图。图的其余部分不需要知道"历史"这回事。
 """
 
 from create_graph import build_graph
@@ -13,8 +11,8 @@ from total_prompts import UNDERSTAND_QUERY_PROMPT
 DEFAULT_QUERY = "下周想去杭州玩3天，带老人"
 EXIT_WORDS = {"exit", "quit", "q", "退出"}
 
-# 图里的节点名是英文，这里给它们起个给人看的名字。
-# 注意 spots_agent 会出现好几次——那是它在循环里反复搜，不是出错。
+# 节点名（英文）→ 展示用中文标签。
+# 注意 spots_agent 会出现多次——是循环里反复搜，不是出错。
 NODE_LABELS = {
     "weather": "查询天气",
     "spots_agent": "推荐景点",
@@ -41,7 +39,7 @@ def understand_query(history: list[str], query: str) -> tuple[str, str]:
 
     if kind.startswith("CHAT"):
         return "CHAT", body
-    return "TRAVEL", body or reply      # 模型没守格式？当出行需求处理，别卡住
+    return "TRAVEL", body or reply      # 模型没守格式时按出行需求处理，避免卡住
 
 
 def show(result: dict) -> None:
@@ -84,8 +82,8 @@ def main():
 
         print("\n正在规划中…")
         try:
-            # 用 stream 而不是 invoke：invoke 要等整张图跑完才返回，中间一片黑；
-            # stream 是每跑完一个节点就吐一次，于是能一行一行报告进度。
+            # 用 stream 而非 invoke：前者每跑完一个节点就吐一次，可逐行报告进度；
+            # 后者要等整张图跑完才返回，中间无任何输出。
             result = {}
             for chunk in app.stream({
                 "user_query": content,
@@ -93,15 +91,15 @@ def main():
                 "days": 0,
                 "start_date": "",
                 "weather": "",
-                "messages": [],      # ReAct 循环的"草稿纸"，开场是空的，由景点节点自己填
+                "messages": [],      # ReAct 循环的中间消息，初始为空，由景点节点填充
                 "spots": "",         # 景点 Agent 的产出，开场是空的
                 "itinerary": "",     # 规划 Agent 的产出，开场是空的
                 "route_plan": "",    # 路线 Agent 的产出，开场是空的
             }):
                 for node_name, update in chunk.items():
                     print(f"  √ {NODE_LABELS.get(node_name, node_name)}")
-                    # 把每个节点的产出攒起来，攒完就是完整结果。
-                    # （注意 messages 在这里会被覆盖成最后一条，展示用不上它，真要它得另想办法）
+                    # 攒起各节点的产出，攒完即完整结果。
+                    # （注意 messages 会在此处被覆盖成最后一条，展示用不上它）
                     result.update(update)
 
             show(result)

@@ -1,36 +1,27 @@
-"""评测集：给这套系统做体检——它检查的不是"能不能跑"，是"跑得对不对"。
+"""评测集：给整套系统做体检——测的不是"能不能跑"，是"跑得对不对"。
 
-为什么要有它：手工跑几遍，只能得出"看着没问题"；说不出好在哪、差在哪。
-有了它，以后任何一个改动（换提示词、换模型、加节点）都能立刻量出来：
-    改之前通过几条 → 改之后通过几条。
-这就是简历上"通过率从 X% 提升到 Y%"里那两个数字的来源。
+价值：任何改动（换提示词、换模型、加节点）都能量出前后通过数之差——
+简历上"通过率从 X% 提升到 Y%"里那两个数字，就从这里来。
 
-它是个【外挂】工具，项目里其他文件一个字都不用改：
-    understand_query 是从 main.py 借的，build_graph 是从 create_graph.py 借的，
-    用法和 api.py 里一模一样，没有复制任何逻辑。
+外挂工具，不动项目其他文件：understand_query 借自 main.py，build_graph 借自 create_graph.py，
+用法与 api.py 一致，没有复制任何逻辑。
 
-怎么跑（在项目根目录下）：
-
-    venv\\Scripts\\python.exe src/evals.py          ← 默认：快测全跑 + 慢测跑前 3 条
+怎么跑（项目根目录下）：
+    venv\\Scripts\\python.exe src/evals.py          ← 默认：快测全跑 + 慢测前 3 条
     venv\\Scripts\\python.exe src/evals.py --fast   ← 只跑快测（几十秒）
-    venv\\Scripts\\python.exe src/evals.py --full   ← 慢测全跑（每条约 1.5 分钟，先算好时间）
+    venv\\Scripts\\python.exe src/evals.py --full   ← 慢测全跑（每条约 1.5 分钟）
 
 两层评测：
+    快测：只测入口判断（闲聊 / 出行需求），不跑图，秒级——判错代价最大：
+          用户要么啥也得不到，要么白跑一分半。
+    慢测：真跑整张图，查四段齐不齐、有无兜底文案、各段耗时。
 
-    第一层 快测：只测"入口判断"——这一句是闲聊还是出行需求？不跑图，秒级。
-                 这里是错误成本最高的地方：判错了，要么用户啥也得不到，
-                 要么白跑一分半、还可能把程序搞崩。
-    第二层 慢测：真跑整张图，看四段结果齐不齐、有没有兜底文案、每段各花多久。
+快测判定标准（以后改提示词时的依据）：
+    需真实数据 → TRAVEL（"杭州明天天气怎么样"）；常识可答 → CHAT（"西湖和灵隐寺哪个更值得去"）；
+    信息太少、说不清目的地 → CHAT，但须先追问。
 
-快测的判定标准（这条以后改提示词时就是依据）：
-    需要真实数据的 → TRAVEL；靠常识就能答的 → CHAT；信息太少、说不清要去哪的 → CHAT（先追问）。
-    比如"杭州明天天气怎么样"需要真实天气数据 → TRAVEL；
-        "西湖和灵隐寺哪个更值得去"常识就能答 → CHAT；
-        "想去个凉快的地方待几天"没目的地 → CHAT，但要追问得好（见下）。
-
-有一组是【人眼项】，不计入自动判定：标签为「不全」的那几条，判定一定是 CHAT，
-真正要看的是回复里有没有接住用户已经说过的条件——他说"凉快"，
-回复里就该出现几个凉快的地方让他挑，而不是干巴巴回一句"想去哪玩几天"。
+「不全」标签的几条是人眼项：判定必为 CHAT，真正要看的是追问有没有接住已说的条件——
+说了"凉快"，就该给几个凉快的地方挑，而不是干巴巴反问"想去哪玩几天"。
 """
 
 import sys
@@ -115,7 +106,7 @@ def run_fast() -> list[str]:
         try:
             kind, content = understand_query(history, query)
         except Exception as e:
-            # 连"判断"这一步都能抛异常，这也是要记录在案的问题
+            # "判断"本身抛异常，同样算失败
             kind, content = "抛异常", str(e)
 
         ok = (kind == expected)
@@ -144,7 +135,7 @@ def run_one(graph, case: dict) -> str | None:
     """跑一条完整的图。通过就返回 None，不通过就返回一句失败原因。"""
     print(f"\n▶ {case['tag']}：{case['query']}")
 
-    result = {}          # 攒四段产出（和 api.py 里那个循环一个套路）
+    result = {}          # 攒四段产出（同 api.py 的攒法）
     timings = {}         # 每一段是第几秒跑完的
     error = None
     t0 = time.time()
@@ -156,7 +147,7 @@ def run_one(graph, case: dict) -> str | None:
             "days": 0,
             "start_date": "",
             "weather": "",
-            "messages": [],      # 景点 Agent 的 ReAct"草稿纸"，开场是空的
+            "messages": [],      # 景点 Agent 的 ReAct 中间消息，初始为空
             "spots": "",
             "itinerary": "",
             "route_plan": "",
@@ -185,8 +176,8 @@ def run_one(graph, case: dict) -> str | None:
 
     # ——— 再判定 ———
     if case["expect"] == "graceful":
-        # 这类用例允许失败，但失败得"体面"：报错要是给人看的中文，
-        # 不能甩出 Python 堆栈或英文校验错误。
+        # 这类用例允许失败，但失败得"体面"：报错须是给人看的中文，
+        # 不能出现 Python 堆栈或英文校验错误。
         if not error:
             return None                      # 居然跑通了，那更好
         has_chinese = any("一" <= ch <= "鿿" for ch in error)
@@ -225,7 +216,7 @@ def run_slow(full: bool) -> list[str]:
           f"{'  ← --full 全跑' if full else '  ← 默认只跑前几条，--full 可全跑'}")
     print("=" * 62)
 
-    graph = build_graph()      # 只编译一次，和 api.py 里一个道理
+    graph = build_graph()      # 只编译一次（同 api.py）
     passed = 0
     failures = []
     t0 = time.time()

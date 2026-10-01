@@ -16,8 +16,8 @@ class AgentState(TypedDict):
     weather: str         # 天气查询结果（自然语言文本，供后续 Agent 阅读）
 
     # ===== 景点 Agent 产出 =====
-    # messages 是 ReAct 循环的"草稿纸"：整条图执行期间，每轮都要往上"追加"一条消息。
-    # Annotated[list, add_messages] 就是在告诉 LangGraph：这个字段要追加，不要覆盖。
+    # messages 是 ReAct 循环的中间消息：整条图执行期间，每轮追加一条。
+    # Annotated[list, add_messages] 即告诉 LangGraph：此字段追加，不覆盖。
     messages: Annotated[list, add_messages]
     spots: str           # 景点推荐结果（自然语言文本，含每个景点的亮点与适配理由）
 
@@ -26,4 +26,4 @@ class AgentState(TypedDict):
 
     # ===== 路线 Agent 产出 =====
     route_plan: str      # 带交通衔接和时刻的详细路线（自然语言文本，全流程的最终产出）
-    # 字段名用 route_plan 而不是 route，是为了不和 route.py（路由函数文件）撞名
+    # 字段名用 route_plan 而非 route，避免和 route.py（路由函数文件）撞名

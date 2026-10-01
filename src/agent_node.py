@@ -26,8 +26,8 @@ from total_prompts import (
 
 # ===== 常量 =====
 
-MAX_SEARCH = 3          # 景点 Agent 最多搜几轮，超过就不再给它工具
-MAX_ROUTE_ROUNDS = 8    # 路线 Agent 最多问几轮，超过就逼它用手上的信息收工
+MAX_SEARCH = 3          # 景点 Agent 最多搜几轮，超过不再给它工具
+MAX_ROUTE_ROUNDS = 8    # 路线 Agent 最多问几轮，超过就让它用手上信息收工
 
 
 # ===== 天气节点 =====
@@ -37,16 +37,15 @@ def weather_node(state: AgentState) -> dict:
     llm = get_llm()
     user_query = state["user_query"]
 
-    # ① 让大脑从用户原话里解析出「目的地」「天数」「出发日期」
+    # ① 用 LLM 从用户原话里解析「目的地」「天数」「出发日期」
     today = date.today()
     prompt = (PARSE_QUERY_PROMPT
               .replace("{today}", str(today))
               .replace("{weekday}", "一二三四五六日"[today.weekday()])
               .replace("{tomorrow}", str(today + timedelta(days=1)))
               .replace("{user_query}", user_query))
-    # with_config(tags=["internal"]) 是给"流式输出"用的标签（见 api.py）：
-    # 这次调用的产物是给程序用的 JSON，贴了 internal，它的生成过程就不会
-    # 一个字一个字流到网页上——用户不该看到 "{"destination": "杭州"..." 这种半截过程。
+    # tags=["internal"]：流式过滤标签（见 api.py 四道过滤第 4 条）——
+    # 本次产出是程序用 JSON，贴上后生成过程不会逐字流给用户。
     raw = llm.with_config(tags=["internal"]).invoke(prompt).content.strip()
     # 容错：LLM 常把 JSON 裹在 ```json ... ``` 代码块里
     raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -63,13 +62,13 @@ def weather_node(state: AgentState) -> dict:
     days = int(parsed["days"])
     start_date = parsed["start_date"]
 
-    # ② 用手去查真实天气（直接调工具，不经过 LLM）
+    # ② 查真实天气（直接调工具，不经 LLM）
     weather_data = get_weather.invoke({
         "city": destination, "days": days, "start_date": start_date,
     })
 
-    # ③ 让大脑把天气数据写成给人看的总结
-    #    （这次没贴标签——"没贴标签"＝"产物是给用户看的"，生成过程会逐字流出去）
+    # ③ 用 LLM 把天气数据写成给人看的总结
+    #    （未贴 internal——产物面向用户，生成过程会逐字流出）
     prompt = (WEATHER_SUMMARY_PROMPT
               .replace("{weather_data}", weather_data)
               .replace("{user_query}", user_query))
@@ -91,11 +90,11 @@ def _count_searches(messages: list) -> int:
 
 
 def spots_agent_node(state: AgentState) -> dict:
-    """景点 Agent 的"大脑"：这个节点会被反复执行，直到它说"不用再搜了"。
+    """景点 Agent：会被反复执行，直到它不再调工具。
 
-    每一轮它只有两种结局：
-        - 回一条带 tool_calls 的消息   → "我还要搜" → 路由把它送去 tools 节点
-        - 回一条不带 tool_calls 的消息 → "以上就是推荐" → 路由让它收工
+    每轮两种结局：
+        - 带 tool_calls   → 还要搜，路由送去 tools 节点
+        - 不带 tool_calls → 得出清单，路由放行去 planner
     """
     history = state["messages"]
 
@@ -112,16 +111,14 @@ def spots_agent_node(state: AgentState) -> dict:
         ]
         history = opening
 
-    # 这个节点每一轮都走这里，但不用贴标签：中间轮输出的是工具参数，
-    # api.py 会把这类自动挡掉；只有最后写清单那一轮的正文会逐字流给用户。
+    # 不用贴标签：中间轮输出的是工具参数，api.py 会自动挡掉；
+    # 只有最后写清单那轮的正文会逐字流给用户。
     llm = get_llm()
     if _count_searches(history) < MAX_SEARCH:
         llm = llm.bind_tools([web_search])
 
-    # 交给大脑思考
     ai = llm.invoke(history)
 
-    # 交出这一轮的成果
     result = {"messages": opening + [ai]}
     if not ai.tool_calls:
         # 没调工具，说明这条就是最终清单
@@ -134,8 +131,8 @@ def spots_agent_node(state: AgentState) -> dict:
 def planner_node(state: AgentState) -> dict:
     """规划节点：把景点清单分配到每一天，排出逐日行程。
 
-    三个 Agent 里最简单的一个——它不需要工具，因为所有原料都已经在 state 里了
-    （天气、景点清单、天数、同行人）。所以只做一件事：填提示词 → 调一次 LLM → 交结果。
+    不需要工具——原料（天气、景点、天数、同行人）都在 state 里：
+    填提示词 → 调一次 LLM → 交结果。
     """
     prompt = (PLANNER_PROMPT
               .replace("{destination}", state["destination"])
@@ -155,13 +152,10 @@ def planner_node(state: AgentState) -> dict:
 def route_agent_node(state: AgentState) -> dict:
     """路线节点：把逐日行程细化成带时刻和交通衔接的详细路线。
 
-    这里是"节点内 ReAct"——循环藏在这个函数内部，图上看不见。
-    所以 create_graph.py 里它就是一个普通节点，route.py 也不用动。
-
-    每一轮问 LLM 一次，它只有两种回答：
-        - 带 tool_calls  → "我要查这几段路线" → 我们替它调 get_directions，
-                           把结果接在消息后面，再来一轮
-        - 不带 tool_calls → "路线排好了" → 循环结束，它的正文就是最终结果
+    节点内 ReAct：循环藏在本函数内部，图上不可见（create_graph.py / route.py 不用参与）。
+    每轮问 LLM 一次，它有两种回答：
+        - 带 tool_calls   → 要查路线：替它调 get_directions，结果接回消息，再来一轮
+        - 不带 tool_calls → 排好了：循环结束，正文即最终结果
     """
     messages = [
         SystemMessage(content=ROUTE_PROMPT),
@@ -179,9 +173,9 @@ def route_agent_node(state: AgentState) -> dict:
     for _ in range(MAX_ROUTE_ROUNDS):
         ai = llm.invoke(messages)
         if not ai.tool_calls:
-            break                       # 它说不用查了，正文就是路线
+            break                       # 不再调工具：正文即路线
         messages.append(ai)
-        for call in ai.tool_calls:      # 它想查的每一段，我们替它去查
+        for call in ai.tool_calls:      # 替它查每一段
             try:
                 result = get_directions.invoke(call["args"])
             except Exception as e:      # 参数传错（比如漏了 city）也别让程序崩
@@ -189,7 +183,7 @@ def route_agent_node(state: AgentState) -> dict:
             messages.append(ToolMessage(content=result, tool_call_id=call["id"]))
 
     if ai.tool_calls:
-        # 轮次用完了它还在要工具：这次不给工具，逼它用手上的信息把路线写出来
+        # 轮次用完还在要工具：不给工具，让它用手上信息直接写路线
         ai = get_llm().invoke(messages)
 
     return {"route_plan": ai.content or "（本次没能生成路线，请重试）"}
